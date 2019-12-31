@@ -1,0 +1,10 @@
+#
+# Normal rules
+#
+*~
+
+#
+# temporary files during compiling phase
+#
+*.d
+*.o
