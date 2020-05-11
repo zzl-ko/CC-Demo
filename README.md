@@ -1,8 +1,8 @@
-# To record some useful C/C++ demo that are offen used for learning and working.
+# To record some useful common demo that are offen used for learning and working.
 -------------------------------------------------------------------------------
 
 ## 一、项目简介
-本项目旨在记录学习和工作中有用的一些 C/C++ Demo
+本项目旨在记录学习和工作中有用的一些"通用"Demo
 
 ## 二、使用方法
 1. 通常每一个文件即为一个独立完整的Demo，直接编译执行即可。
