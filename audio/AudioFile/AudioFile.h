@@ -69,6 +69,15 @@ public:
      * @Returns true if the file was successfully saved
      */
     bool save (std::string filePath, AudioFileFormat format = AudioFileFormat::Wave);
+
+    bool save (AudioFileFormat format = AudioFileFormat::Wave);
+
+    /** init audio recorder paramers */
+    void init (const int &_numChannels, const int &_sampleRate, const int &_bitDepth, 
+                          const int &_recordTime, const std::string &_audioFilePath);
+
+    /** put audio data into the buffer */
+    void assignToAudioBuffer (short *src, int sizeToAssign, bool isDiffChData = false);
         
     //=============================================================
     /** @Returns the sample rate */
@@ -150,6 +159,7 @@ private:
     //=============================================================
     bool saveToWaveFile (std::string filePath);
     bool saveToAiffFile (std::string filePath);
+    bool saveToPcmFile  (std::string filePath);
     
     //=============================================================
     void clearAudioBuffer();
@@ -188,6 +198,9 @@ private:
     uint32_t sampleRate;
     int bitDepth;
     bool logErrorsToConsole {true};
+    bool initializeEveryRecorder;
+    int assignedSamples;
+    std::string audioFilePath;
 };
 
 
@@ -228,6 +241,30 @@ AudioFile<T>::AudioFile()
     samples.resize (1);
     samples[0].resize (0);
     audioFileFormat = AudioFileFormat::NotLoaded;
+    initializeEveryRecorder = false;
+    assignedSamples = 0;
+}
+
+//=============================================================
+
+template <class T>
+void AudioFile<T>::init(const int &_numChannels, const int &_sampleRate, const int &_bitDepth, 
+                        const int &_recordTime, const std::string &_audioFilePath)
+{
+    if (!initializeEveryRecorder)
+    {
+        initializeEveryRecorder = true;
+        assignedSamples = 0;
+        audioFilePath = _audioFilePath;
+        std::cout << "init record, audioFilePath: " << _audioFilePath << std::endl;
+
+        bitDepth = _bitDepth;
+        sampleRate = _sampleRate;
+        samples.resize(_numChannels);
+        int numSamples = _recordTime * _sampleRate;
+        setNumSamplesPerChannel(numSamples);
+        audioFileFormat = AudioFileFormat::NotLoaded;
+    }
 }
 
 //=============================================================
@@ -698,6 +735,76 @@ void AudioFile<T>::addSampleRateToAiffData (std::vector<uint8_t>& fileData, uint
 
 //=============================================================
 template <class T>
+void AudioFile<T>::assignToAudioBuffer(short *src, int sizeToAssign, bool isDiffChData)
+{
+    // TODO: automate save procedure.
+    if (initializeEveryRecorder)
+    {
+        if ((assignedSamples + sizeToAssign) >= getNumSamplesPerChannel())
+        {
+            // assert (false && "The buffer allready full");
+            if (save())
+            {
+                std::cout << "recording finish";
+            }
+            else
+            {
+                std::cout << "problem to save the recording file";
+            }
+
+            initializeEveryRecorder = false;
+            return;
+        }
+
+        if (isDiffChData)
+        {
+            for (int i = 0; i < sizeToAssign; i++)
+            {
+                for (int channel = 0; channel < getNumChannels(); channel++)
+                {
+                    samples[channel][assignedSamples] = sixteenBitIntToSample(src[i * getNumChannels() + channel]);
+                }
+
+                assignedSamples++;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < sizeToAssign; i++)
+            {
+                for (int channel = 0; channel < getNumChannels(); channel++)
+                {
+                    samples[channel][assignedSamples] = sixteenBitIntToSample(src[i]);
+                }
+
+                assignedSamples++;
+            }
+        }
+    }
+}
+
+//=============================================================
+template <class T>
+bool AudioFile<T>::save(AudioFileFormat format)
+{
+    if (format == AudioFileFormat::Wave)
+    {
+        return saveToWaveFile(audioFilePath);
+    }
+    else if (format == AudioFileFormat::Aiff)
+    {
+        return saveToAiffFile(audioFilePath);
+    }
+    else if (format == AudioFileFormat::NotLoaded)
+    {
+        return saveToPcmFile(audioFilePath);
+    }
+
+    return false;
+}
+
+//=============================================================
+template <class T>
 bool AudioFile<T>::save (std::string filePath, AudioFileFormat format)
 {
     if (format == AudioFileFormat::Wave)
@@ -708,8 +815,56 @@ bool AudioFile<T>::save (std::string filePath, AudioFileFormat format)
     {
         return saveToAiffFile (filePath);
     }
+    else if (format == AudioFileFormat::NotLoaded)
+    {
+        return saveToPcmFile(filePath);
+    }
     
     return false;
+}
+
+//=============================================================
+template <class T>
+bool AudioFile<T>::saveToPcmFile (std::string filePath)
+{
+    std::vector<uint8_t> fileData;
+
+    for (int i = 0; i < getNumSamplesPerChannel(); i++)
+    {
+        for (int channel = 0; channel < getNumChannels(); channel++)
+        {
+            if (bitDepth == 8)
+            {
+                uint8_t byte = sampleToSingleByte (samples[channel][i]);
+                fileData.push_back (byte);
+            }
+            else if (bitDepth == 16)
+            {
+                int16_t sampleAsInt = sampleToSixteenBitInt (samples[channel][i]);
+                addInt16ToFileData (fileData, sampleAsInt);
+            }
+            else if (bitDepth == 24)
+            {
+                int32_t sampleAsIntAgain = (int32_t) (samples[channel][i] * (T)8388608.);
+                
+                uint8_t bytes[3];
+                bytes[2] = (uint8_t) (sampleAsIntAgain >> 16) & 0xFF;
+                bytes[1] = (uint8_t) (sampleAsIntAgain >>  8) & 0xFF;
+                bytes[0] = (uint8_t) sampleAsIntAgain & 0xFF;
+                
+                fileData.push_back (bytes[0]);
+                fileData.push_back (bytes[1]);
+                fileData.push_back (bytes[2]);
+            }
+            else
+            {
+                assert (false && "Trying to write a file with unsupported bit depth");
+                return false;
+            }
+        }
+    }
+
+    return writeDataToFile (fileData, filePath);
 }
 
 //=============================================================
