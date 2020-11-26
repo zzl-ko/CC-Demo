@@ -1,0 +1,8 @@
+/ {
+	ultrasonic: ultrasonic {
+	    status = "okay";
+	    compatible = "firefly,rk3399-ultrasonic";
+	    firefly-trig-gpio = <&gpio2 12 GPIO_ACTIVE_LOW>;      /* GPIO2_B4 */
+		firefly-echo-gpio = <&gpio2 11 IRQ_TYPE_EDGE_BOTH>;   /* GPIO2_B3 */
+	};
+};
