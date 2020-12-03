@@ -25,24 +25,24 @@ int main(int argc, const char *argv[])
     
     ret = ioctl(fd,ULTRASONIC_CMD_START,NULL);
     if(ret < 0) {
-		perror("ioctl-START:");
+        perror("ioctl-START:");
         return -1;
     }
 
-	while(count--) {
-		ret = ioctl(fd,ULTRASONIC_CMD_GET_DIS,&dis_mm);
-		if(ret < 0){
-			perror("ioctl-GET_DIS:");
-			return -1;
-		}
- 
-		printf("dis:%ld\n", dis_mm);
-		sleep(1);
-	}
+    while(count--) {
+        ret = ioctl(fd,ULTRASONIC_CMD_GET_DIS,&dis_mm);
+        if(ret < 0){
+            perror("ioctl-GET_DIS:");
+            return -1;
+        }
 
-	ret = ioctl(fd,ULTRASONIC_CMD_STOP,NULL);
+        printf("dis:%ld\n", dis_mm);
+        sleep(1);
+    }
+
+    ret = ioctl(fd,ULTRASONIC_CMD_STOP,NULL);
     if(ret < 0) {
-		perror("ioctl-STOP:");
+        perror("ioctl-STOP:");
         return -1;
     }
 	close(fd);

@@ -5,6 +5,7 @@
 #include <linux/time.h>
 #include <linux/mutex.h>
 #include <linux/types.h>
+#include <linux/cdev.h>
 
 //#define ULTRASONIC_USE_PWM
  
@@ -26,6 +27,9 @@ struct ultrasonic_data {
 	struct timeval     l_time;  // last time
 	struct timeval     c_time;  // current time
 	struct mutex      u_mutex;
+    dev_t               devno;
+    struct cdev         usdev;
+    struct class       *uscls;
     struct task_struct *ptask;
 };
  

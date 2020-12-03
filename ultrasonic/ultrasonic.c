@@ -28,6 +28,7 @@
 #include <linux/time.h>
 #include <linux/mutex.h>
 #include <linux/types.h>
+#include <linux/cdev.h>
 
 //#define ULTRASONIC_USE_PWM
 
@@ -49,9 +50,12 @@ struct ultrasonic_data {
     struct timeval     l_time;  // last time
     struct timeval     c_time;  // current time
     struct mutex      u_mutex;
+    dev_t               devno;
+    struct cdev         usdev;
+    struct class       *uscls;
     struct task_struct *ptask;
 };
- 
+
 #define ULTRASONIC_CMD_START        _IOW(0, 1, int)
 #define ULTRASONIC_CMD_STOP         _IOW(0, 2, int)
 #define ULTRASONIC_CMD_SET_DUTY     _IOW(0, 3, int)
@@ -63,15 +67,24 @@ struct ultrasonic_data {
 #define US_STATUS_START             1
 
 #define US_RANGING_INTERVAL         (500) // unit ms
+#define US_DEV_MINOR_BASE           0
+#define US_DEV_MINOR_COUNT          1
 
-static struct platform_device *us_dev;
-static struct ultrasonic_data *us_dat;
+// static struct platform_device *us_dev;
+// static struct ultrasonic_data *us_dat;
  
 static int ultrasonic_open(struct inode *inode, struct file *file)
 {
-    struct ultrasonic_data *pdata = us_dat; //file->private_data;
+    struct ultrasonic_data *pdata;
+
+    /* look up device info for this device file (ref kernel/drivers/char/snsc.c) */
+    pdata = container_of(inode->i_cdev, struct ultrasonic_data, usdev);
+
+    file->private_data = pdata;
 
     printk(KERN_INFO "%s %s line %d\n", __FILE__, __FUNCTION__, __LINE__);
+
+    printk(KERN_INFO "%s: trig=%u, echo=%u, irq=%d, irq_flags=%u\n", __func__, pdata->trig_gpio, pdata->echo_gpio, pdata->echo_irq, pdata->irq_flags);
 
     if (test_and_set_bit(US_STATUS_OPEN, &pdata->status))
         return -EBUSY;
@@ -80,7 +93,7 @@ static int ultrasonic_open(struct inode *inode, struct file *file)
  
 static int ultrasonic_release(struct inode *inode, struct file *file)
 {
-    struct ultrasonic_data *pdata = us_dat; //file->private_data;
+    struct ultrasonic_data *pdata = file->private_data;
 
     printk(KERN_INFO "%s %s line %d\n", __FILE__, __FUNCTION__, __LINE__);
 
@@ -91,7 +104,7 @@ static int ultrasonic_release(struct inode *inode, struct file *file)
 static long ultrasonic_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     void __user *argp = (void __user *) arg;
-    struct ultrasonic_data *pdata = us_dat; //file->private_data;
+    struct ultrasonic_data *pdata = file->private_data;
 
     printk(KERN_INFO "%s %s line %d\n", __FILE__, __FUNCTION__, __LINE__);
  
@@ -169,8 +182,9 @@ static irqreturn_t ultrasonic_irq_handler(int irq, void *data)
 
 static int ultrasonic_thread(void *arg)
 {
-    struct ultrasonic_data *pdata = arg;
-    long interval;
+    struct platform_device *pdev  = arg;
+    struct ultrasonic_data *pdata = platform_get_drvdata(pdev);
+    long   interval;
 
     printk(KERN_INFO "%s %s line %d: start...\n", __FILE__, __FUNCTION__, __LINE__);
  
@@ -178,7 +192,7 @@ static int ultrasonic_thread(void *arg)
     enable_irq(pdata->echo_irq);
  
     while(!kthread_should_stop()) {
-        //dev_dbg(&us_dev->dev, "test start!\n");
+        //dev_dbg(&pdev->dev, "test start!\n");
         atomic_set(&pdata->count, 0);
         set_bit(US_STATUS_START, &pdata->status);
  
@@ -202,7 +216,7 @@ static int ultrasonic_thread(void *arg)
         pdata->dis_mm = (170 * interval)/1000;
         mutex_unlock(&pdata->u_mutex);
 
-        dev_dbg(&us_dev->dev, "c:%ld l:%ld, distance is :%ld mm\n", pdata->c_time.tv_usec, pdata->l_time.tv_usec, pdata->dis_mm);
+        dev_dbg(&pdev->dev, "c:%ld l:%ld, distance is :%ld mm\n", pdata->c_time.tv_usec, pdata->l_time.tv_usec, pdata->dis_mm);
         printk("c:%ld l:%ld, distance is :%ld mm\n", pdata->c_time.tv_usec, pdata->l_time.tv_usec, pdata->dis_mm);
     }
 
@@ -218,17 +232,21 @@ static const struct file_operations ultrasonic_fops = {
     .unlocked_ioctl = ultrasonic_ioctl,
 };
 
+#ifdef USE_MISC
 static struct miscdevice ultrasonic_dev = {
     .minor = MISC_DYNAMIC_MINOR,
     .name = "Ultrasonic",
     .fops = &ultrasonic_fops,
 };
+#endif
 
 static int ultrasonic_probe(struct platform_device *pdev)
 {
-    int ret;
-    struct file  *filp            = NULL;
-	struct inode *inode           = NULL;
+    int                     ret;
+    u32                     irq_flags;
+    struct device          *dev;
+    struct file            *filp  = NULL;
+    struct inode           *inode = NULL;
     struct device_node     *pnode = pdev->dev.of_node;
     struct ultrasonic_data *pdata = kzalloc(sizeof(struct ultrasonic_data), GFP_KERNEL);
 
@@ -245,8 +263,8 @@ static int ultrasonic_probe(struct platform_device *pdev)
 
     pdata->status = 0;
     pdata->start  = 0;
-    us_dat = pdata;
-    us_dev = pdev;
+    // us_dat = pdata;
+    // us_dev = pdev;
  
 #ifdef ULTRASONIC_USE_PWM
     pdata->pwm = pwm_request(pdata->pwm_id, "ultrasonic-pwm");
@@ -290,9 +308,9 @@ static int ultrasonic_probe(struct platform_device *pdev)
 
     //request irq.
     pdata->echo_irq = gpio_to_irq(pdata->echo_gpio);
-    // irq_flags = IRQF_TRIGGER_RISING|IRQF_TRIGGER_FALLING;
+    irq_flags = IRQF_TRIGGER_RISING|IRQF_TRIGGER_FALLING;
     // ret = devm_request_threaded_irq(&pdev->dev, pdata->echo_irq, ultrasonic_irq_handler, NULL, irq_flags, "ultrasonic-irq", pdata);
-    ret = request_threaded_irq(pdata->echo_irq, ultrasonic_irq_handler, NULL, pdata->irq_flags, "ultrasonic-irq", pdata);
+    ret = request_threaded_irq(pdata->echo_irq, ultrasonic_irq_handler, NULL, irq_flags, "ultrasonic-irq", pdata);
     if (ret < 0) {
         dev_err(&pdev->dev, "request ultrasonic-irq failed: %d\n", ret);
         goto error3;
@@ -300,10 +318,10 @@ static int ultrasonic_probe(struct platform_device *pdev)
     //enable later.
     disable_irq(pdata->echo_irq);
 
-    printk(KERN_INFO "%s: trig=%u, echo=%u, irq=%d, irq_flags=%u\n", __func__, pdata->trig_gpio, pdata->echo_gpio, pdata->echo_irq, pdata->irq_flags);
+    printk(KERN_INFO "%s: trig=%u, echo=%u, irq=%d, irq_flags=%u\n", __func__, pdata->trig_gpio, pdata->echo_gpio, pdata->echo_irq, irq_flags);
 
     //core thread to run and caculate.
-    pdata->ptask = kthread_run(ultrasonic_thread, pdata, "us-kthread");
+    pdata->ptask = kthread_run(ultrasonic_thread, pdev, "us-kthread");
     if (IS_ERR(pdata->ptask)) {
         ret = PTR_ERR(pdata->ptask);
         dev_err(&pdev->dev, "create ultrasnoic core thread failed: %d\n", ret);
@@ -311,11 +329,40 @@ static int ultrasonic_probe(struct platform_device *pdev)
     }
 
     //Used in user space.
+#ifndef USE_MISC
+    ret = alloc_chrdev_region(&pdata->devno, US_DEV_MINOR_BASE, US_DEV_MINOR_COUNT, "us-chrdev");
+    if (ret < 0) {
+        dev_err(&pdev->dev, "us-chrdev alloc_chrdev_region failed\n");
+        goto error5;
+    }
+    
+    cdev_init(&pdata->usdev, &ultrasonic_fops);
+    ret = cdev_add(&pdata->usdev, pdata->devno, US_DEV_MINOR_COUNT);
+    if (ret) {
+        dev_err(&pdev->dev, "ultrasnoic cdev_add failed: %d\n", ret);
+        goto error6;
+    }
+
+    pdata->uscls = class_create(THIS_MODULE, "us-class");
+    if (IS_ERR(pdata->uscls)) {
+        ret = PTR_ERR(pdata->uscls);
+        dev_err(&pdev->dev, "us-class class_create failed: %d\n", ret);
+        goto error7;
+    }
+
+    dev = device_create(pdata->uscls, NULL, pdata->devno, pdata, "Ultrasonic");
+    if (IS_ERR(dev)) {
+        ret = PTR_ERR(dev);
+        dev_err(&pdev->dev, "us-dev-node device_create failed: %d\n", ret);
+        goto error8;
+    }
+#else
     ret = misc_register(&ultrasonic_dev);
     if (ret) {
         dev_err(&pdev->dev, "ultrasonic_dev register failed\n");
         goto error5;
     }
+#endif
 
     filp = filp_open("/dev/Ultrasonic", O_RDONLY|O_CREAT, 0);
     if(IS_ERR(filp)){
@@ -333,6 +380,13 @@ static int ultrasonic_probe(struct platform_device *pdev)
   
     printk(KERN_INFO "%s %s line %d: finish!\n", __FILE__, __FUNCTION__, __LINE__);
     return 0;
+
+error8:
+    class_destroy(pdata->uscls);
+error7:
+    cdev_del(&pdata->usdev);
+error6:
+    unregister_chrdev_region(pdata->devno, US_DEV_MINOR_COUNT);
 
 error5:
     kthread_stop(pdata->ptask);
@@ -358,6 +412,12 @@ static int ultrasonic_remove(struct platform_device *pdev)
     struct ultrasonic_data *pdata = platform_get_drvdata(pdev);
 
     if (NULL != pdata) {
+#ifndef USE_MISC
+        device_destroy(pdata->uscls, pdata->devno);
+        class_destroy(pdata->uscls);
+        cdev_del(&pdata->usdev);
+        unregister_chrdev_region(pdata->devno, US_DEV_MINOR_COUNT);
+#endif
         kthread_stop(pdata->ptask);
         mdelay(US_RANGING_INTERVAL * 2); // delay wait for kthread exit
         free_irq(pdata->echo_irq, pdata);
@@ -368,7 +428,9 @@ static int ultrasonic_remove(struct platform_device *pdev)
 #endif
         kfree(pdata);
     }
+#ifdef USE_MISC
     misc_deregister(&ultrasonic_dev);
+#endif
     printk(KERN_INFO "%s %s line %d: end\n", __FILE__, __FUNCTION__, __LINE__);
 
     return 0;
